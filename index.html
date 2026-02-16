@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UNI (UNO-style) — 4 Player Local</title>
+  <style>
+    :root{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--muted:#94a3b8;--accent:#22c55e}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Arial;background:linear-gradient(135deg,#0b1220,#111827);color:var(--text)}
+    .wrap{max-width:1100px;margin:0 auto;padding:16px}
+    .top{display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+    .panel{background:rgba(30,41,59,.8);border:1px solid #334155;border-radius:12px;padding:12px}
+    .players{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin-top:12px}
+    .player{padding:10px;border-radius:10px;background:#0b1325;border:1px solid #334155}
+    .player.active{outline:2px solid var(--accent)}
+    .board{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:center;margin:16px 0}
+    .pile,.deck{min-height:160px;display:flex;align-items:center;justify-content:center}
+    .card{width:96px;height:140px;border-radius:12px;border:2px solid rgba(255,255,255,.2);display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:700;font-size:28px;cursor:pointer;user-select:none}
+    .mini{width:64px;height:92px;font-size:20px}
+    .red{background:#dc2626}.green{background:#16a34a}.blue{background:#2563eb}.yellow{background:#ca8a04}.wild{background:#111827}
+    .center{text-align:center}
+    .hand{display:flex;flex-wrap:wrap;gap:8px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    button{background:#1f2937;color:var(--text);border:1px solid #475569;border-radius:10px;padding:8px 12px;cursor:pointer}
+    button:hover{filter:brightness(1.1)}
+    .hidden{display:none}
+    .muted{color:var(--muted)}
+    .log{max-height:110px;overflow:auto;font-size:13px;line-height:1.5}
+    .overlay{position:fixed;inset:0;background:rgba(2,6,23,.84);display:flex;align-items:center;justify-content:center;padding:16px}
+    .overlay .box{max-width:520px;width:100%;background:#0b1325;border:1px solid #334155;border-radius:14px;padding:16px}
+    h1,h2,p{margin:.3em 0}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top panel">
+    <div>
+      <h1>UNI (UNO-style) — 4 Player Local</h1>
+      <p class="muted">Pass-and-play on one device. First to 0 cards wins.</p>
+    </div>
+    <div class="controls">
+      <button id="newGameBtn">New Game</button>
+      <button id="drawBtn">Draw Card</button>
+      <button id="passBtn">Pass Turn</button>
+    </div>
+  </div>
+
+  <div class="players" id="players"></div>
+
+  <div class="board">
+    <div class="panel deck center">
+      <h3>Deck</h3>
+      <div class="card wild mini" id="deckVisual">🂠</div>
+      <small class="muted" id="deckCount"></small>
+    </div>
+
+    <div class="panel pile center">
+      <h3>Top Card</h3>
+      <div id="topCard"></div>
+      <small class="muted" id="currentColor"></small>
+    </div>
+
+    <div class="panel center">
+      <h3>Direction</h3>
+      <div id="direction">→</div>
+      <small class="muted" id="turnInfo"></small>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2 id="handTitle">Hand</h2>
+    <div class="hand" id="hand"></div>
+    <div class="controls" id="wildControls" class="hidden"></div>
+  </div>
+
+  <div class="panel" style="margin-top:12px">
+    <h3>Game Log</h3>
+    <div class="log" id="log"></div>
+  </div>
+</div>
+
+<div class="overlay" id="passOverlay">
+  <div class="box">
+    <h2 id="overlayTitle">Pass device</h2>
+    <p id="overlayText" class="muted"></p>
+    <div class="controls">
+      <button id="readyBtn">I’m ready</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const COLORS = ["red","green","blue","yellow"];
+  const VALS = ["0","1","2","3","4","5","6","7","8","9","skip","reverse","+2"];
+
+  let state = {};
+
+  const el = (id)=>document.getElementById(id);
+  const playersEl = el('players');
+  const handEl = el('hand');
+  const topCardEl = el('topCard');
+  const deckCountEl = el('deckCount');
+  const currentColorEl = el('currentColor');
+  const directionEl = el('direction');
+  const turnInfoEl = el('turnInfo');
+  const handTitleEl = el('handTitle');
+  const logEl = el('log');
+  const passOverlay = el('passOverlay');
+  const overlayTitle = el('overlayTitle');
+  const overlayText = el('overlayText');
+
+  function cardLabel(c){ return c.value.startsWith('wild') ? 'W' : c.value; }
+  function classFor(c){ return c.color || 'wild'; }
+  function makeCard(c, mini=false){
+    const d = document.createElement('div');
+    d.className = `card ${classFor(c)} ${mini?'mini':''}`;
+    d.innerHTML = `<div>${cardLabel(c)}</div>`;
+    return d;
+  }
+
+  function createDeck(){
+    const d=[];
+    for(const color of COLORS){
+      for(const v of VALS){
+        const n = v==='0'?1:2;
+        for(let i=0;i<n;i++) d.push({color,value:v});
+      }
+    }
+    for(let i=0;i<4;i++) d.push({color:null,value:'wild'});
+    for(let i=0;i<4;i++) d.push({color:null,value:'wild+4'});
+    return shuffle(d);
+  }
+
+  function shuffle(a){
+    for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}
+    return a;
+  }
+
+  function draw(n=1, p=state.turn){
+    for(let i=0;i<n;i++){
+      if(state.deck.length===0){
+        const top=state.discard.pop();
+        state.deck = shuffle(state.discard);
+        state.discard=[top];
+      }
+      state.hands[p].push(state.deck.pop());
+    }
+  }
+
+  function nextTurn(step=1){
+    const len=4;
+    state.turn = (state.turn + step*state.dir + len) % len;
+  }
+
+  function canPlay(card, top, currentColor){
+    if(card.value==='wild' || card.value==='wild+4') return true;
+    if(card.color===currentColor) return true;
+    if(top.value===card.value) return true;
+    return false;
+  }
+
+  function playCard(idx){
+    const p=state.turn;
+    const hand=state.hands[p];
+    const card=hand[idx];
+    const top=state.discard[state.discard.length-1];
+    if(!canPlay(card,top,state.currentColor)) return;
+
+    hand.splice(idx,1);
+    state.discard.push(card);
+
+    if(card.color) state.currentColor = card.color;
+
+    log(`P${p+1} played ${card.color?card.color+' ':''}${card.value}`);
+
+    if(hand.length===0){
+      render();
+      setTimeout(()=>alert(`Player ${p+1} wins!`),50);
+      return;
+    }
+
+    if(card.value==='reverse'){
+      state.dir *= -1;
+      nextTurn(1);
+    } else if(card.value==='skip'){
+      nextTurn(2);
+    } else if(card.value==='+2'){
+      nextTurn(1); draw(2,state.turn); nextTurn(1);
+    } else if(card.value==='wild'){
+      chooseColor((c)=>{ state.currentColor=c; nextTurn(1); renderPassPrompt(); });
+      render();
+      return;
+    } else if(card.value==='wild+4'){
+      chooseColor((c)=>{ state.currentColor=c; nextTurn(1); draw(4,state.turn); nextTurn(1); renderPassPrompt(); });
+      render();
+      return;
+    } else {
+      nextTurn(1);
+    }
+
+    renderPassPrompt();
+  }
+
+  function chooseColor(cb){
+    passOverlay.classList.remove('hidden');
+    overlayTitle.textContent='Choose color';
+    overlayText.textContent='Pick a color for the wild card.';
+    const box = passOverlay.querySelector('.box .controls');
+    box.innerHTML='';
+    for(const c of COLORS){
+      const b=document.createElement('button');
+      b.textContent=c.toUpperCase();
+      b.onclick=()=>{ passOverlay.classList.add('hidden'); cb(c); render(); };
+      box.appendChild(b);
+    }
+  }
+
+  function log(t){
+    const tm = new Date().toLocaleTimeString();
+    logEl.innerHTML = `<div>[${tm}] ${t}</div>` + logEl.innerHTML;
+  }
+
+  function renderPlayers(){
+    playersEl.innerHTML='';
+    for(let i=0;i<4;i++){
+      const d=document.createElement('div');
+      d.className='player'+(i===state.turn?' active':'');
+      d.innerHTML=`<strong>Player ${i+1}</strong><div class='muted'>Cards: ${state.hands[i].length}</div>`;
+      playersEl.appendChild(d);
+    }
+  }
+
+  function renderHand(){
+    handEl.innerHTML='';
+    const p=state.turn;
+    handTitleEl.textContent=`Player ${p+1} Hand`;
+    state.hands[p].forEach((c,idx)=>{
+      const card=makeCard(c,true);
+      const legal = canPlay(c, state.discard[state.discard.length-1], state.currentColor);
+      card.style.opacity = legal ? 1 : .45;
+      card.onclick=()=>playCard(idx);
+      handEl.appendChild(card);
+    });
+  }
+
+  function renderTop(){
+    topCardEl.innerHTML='';
+    topCardEl.appendChild(makeCard(state.discard[state.discard.length-1]));
+    deckCountEl.textContent=`${state.deck.length} cards left`;
+    currentColorEl.textContent=`Current color: ${state.currentColor.toUpperCase()}`;
+    directionEl.textContent = state.dir===1 ? '→' : '←';
+    turnInfoEl.textContent = `Player ${state.turn+1} turn`;
+  }
+
+  function render(){ renderPlayers(); renderTop(); renderHand(); }
+
+  function renderPassPrompt(){
+    passOverlay.classList.remove('hidden');
+    const next=state.turn+1;
+    overlayTitle.textContent='Pass the device';
+    overlayText.textContent=`Player ${next}, tap when ready.`;
+    const box = passOverlay.querySelector('.box .controls');
+    box.innerHTML='';
+    const btn=document.createElement('button');
+    btn.id='readyBtn'; btn.textContent='I’m ready';
+    btn.onclick=()=>{ passOverlay.classList.add('hidden'); render(); };
+    box.appendChild(btn);
+  }
+
+  function newGame(){
+    state = { deck:createDeck(), discard:[], hands:[[],[],[],[]], turn:0, dir:1, currentColor:'red' };
+    for(let p=0;p<4;p++) draw(7,p);
+    let first = state.deck.pop();
+    while(first.value.startsWith('wild')) { state.deck.unshift(first); shuffle(state.deck); first=state.deck.pop(); }
+    state.discard=[first];
+    state.currentColor=first.color;
+    logEl.innerHTML='';
+    log('Game started');
+    renderPassPrompt();
+  }
+
+  el('newGameBtn').onclick=newGame;
+  el('drawBtn').onclick=()=>{ draw(1,state.turn); log(`P${state.turn+1} drew 1 card`); render(); };
+  el('passBtn').onclick=()=>{ nextTurn(1); renderPassPrompt(); };
+
+  newGame();
+</script>
+</body>
+</html>
